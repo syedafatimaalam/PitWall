@@ -124,6 +124,29 @@ try:
     # Verify packet structure and CRC
     telemetry = decode_packet(decoded_packet)
 
+    import csv
+    from pathlib import Path
+
+    csv_path = Path(__file__).resolve().parent.parent / "pitwall_telemetry.csv"
+
+    with open(csv_path, "w", newline="") as file:
+        writer = csv.writer(file)
+
+        writer.writerow([
+            "timestamp_ms", "seq", "left_rpm",
+            "right_rpm", "throttle_pct", "crc_ok"
+        ])
+
+        writer.writerow([
+            telemetry["timestamp_ms"],
+            telemetry["sequence"],
+            telemetry["left_rpm"],
+            telemetry["right_rpm"],
+            telemetry["throttle_percent"],
+            True
+        ])
+
+        print(f"Dashboard CSV saved: {csv_path}")
     print("\nCRC verification: VALID")
 
     # Display decoded telemetry
