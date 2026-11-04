@@ -1,13 +1,24 @@
-#define RF_DATA 23
+
+#include <Arduino.h>
+
+#define RF_PIN 23
 
 void setup() {
-  pinMode(RF_DATA, OUTPUT);
+  Serial.begin(115200);
+  pinMode(RF_PIN, OUTPUT);
+  digitalWrite(RF_PIN, LOW);
+
+  Serial.println("PitWall RF HIGH/LOW Test");
 }
 
 void loop() {
-  digitalWrite(RF_DATA, HIGH);
-  delay(500);
+  // Transmitter ON for 100 ms
+  digitalWrite(RF_PIN, HIGH);
+  delay(100);
 
-  digitalWrite(RF_DATA, LOW);
-  delay(500);
+  // Transmitter OFF for 900 ms
+  digitalWrite(RF_PIN, LOW);
+  delay(900);
+
+  Serial.println("100 ms HIGH test completed");
 }
