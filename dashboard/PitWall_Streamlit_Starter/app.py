@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-
+from behavior_inference import predict_history
 
 st.set_page_config(page_title="PitWall | RC Telemetry", page_icon="🏁", layout="wide")
 st.markdown("""
@@ -229,15 +229,48 @@ def display():
         "simulation interval. Actual RF link measurements will "
         "require HackRF receiver data."
         )
-    elif page == "ML Prediction":
-        st.markdown("#### Predict average wheel RPM 0.5 seconds ahead")
-        st.write("The proposed model is a Random Forest regressor evaluated against a persistence baseline. This screen will display the actual results when your model is connected.")
-        st.plotly_chart(line_plot(frame,[("average_rpm","Measured")]+([("predicted_rpm","Illustrative estimate")] if "predicted_rpm" in frame else []),"Wheel-speed history and forecast","RPM",{"average_rpm":"#1477ed","predicted_rpm":"#fa474b"}),width="stretch")
-        if source == "Synthetic demo":
-            st.warning("Demo predictions are placeholders. MAE/RMSE must be computed on held-out real driving runs.")
-        else:
-            st.caption("Only show MAE/RMSE after joining predictions to their correct future measurement timestamps.")
 
+    elif page == "ML Prediction":
+        st.markdown("#### Future Driving Behavior Prediction")
+        st.caption("Random Forest model — predicts behavior 0.5 seconds ahead")
+
+        try:
+            predictions = predict_history(frame)
+            latest = predictions.iloc[-1]
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.metric(
+                    "Predicted Behavior",
+                    latest["predicted_behavior"]
+                )
+
+            with col2:
+                st.metric(
+                    "Prediction Confidence",
+                    f"{latest['confidence']:.1%}"
+                )
+
+            st.markdown("### Prediction History")
+
+            st.dataframe(
+                predictions[
+                    ["timestamp_ms", "predicted_behavior", "confidence"]
+                ].tail(20).iloc[::-1],
+                hide_index=True,
+                use_container_width=True
+            )
+
+            if source == "Synthetic demo":
+                st.warning(
+                    "Predictions use simulated telemetry. "
+                    "Real driving accuracy has not yet been evaluated."
+                )
+
+        except (ValueError, OSError, KeyError) as error:
+            st.warning(str(error))
+        
     elif page == "Data Log":
         st.dataframe(frame.sort_values("timestamp_ms",ascending=False),hide_index=True,width="stretch",height=480)
         st.download_button("Download visible data",frame.to_csv(index=False),file_name="pitwall_telemetry.csv",mime="text/csv")
