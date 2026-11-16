@@ -3,7 +3,7 @@
 Run: streamlit run app.py
 Replace load_live_csv() with the output of the validated SDR decoder later.
 """
-
+import joblib
 from pathlib import Path
 import math
 import time
@@ -38,7 +38,7 @@ OPTIONAL = ["ax","ay","az","yaw_dps","predicted_rpm","driver","lap"]
 
 
 @st.cache_data
-def demo_data(duration=90, rate=10):
+def demo_data(duration=60, rate=10):
     rng = np.random.default_rng(52)
     t = np.arange(0, duration, 1/rate)
     throttle = np.clip(46 + 32*np.sin(t*.31) + 18*np.sin(t*.73), 0, 95)
@@ -72,7 +72,9 @@ def normalize_csv(upload):
     data["crc_ok"] = data["crc_ok"].astype(str).str.lower().isin(["true","1","yes","valid"])
     if data[["timestamp_ms","seq"]].isna().any().any():
         raise ValueError("timestamp_ms and seq must contain valid numbers")
-    data = data.sort_values("timestamp_ms").drop_duplicates(
+    # Preserve the order in which real RF packets were saved.
+# ESP32 uptime can reset, so do not sort by timestamp_ms.
+    data = data.drop_duplicates(
         subset=["timestamp_ms", "seq"],
         keep="last"
     )
@@ -121,8 +123,9 @@ with st.sidebar:
     page = st.radio("Navigation",["Live Dashboard","RF Link Monitor","ML Prediction","Data Log","Driver Comparison","Settings"], label_visibility="collapsed")
     st.divider()
     source = st.selectbox(
-    "Data source",
-    ["Synthetic demo", "Upload decoded CSV", "Live Receiver"])
+        "Data source",
+        ["Live Receiver", "Upload decoded CSV"]
+    )
     upload = st.file_uploader("Decoded telemetry CSV",type="csv") if source == "Upload decoded CSV" else None
     if source == "Synthetic demo":
         auto = st.toggle("Live simulation",value=True)
@@ -160,10 +163,19 @@ def display():
     if source == "Live Receiver":
         from pathlib import Path
 
-        csv_path = (
-            Path(__file__).resolve().parents[2]
-            / "pitwall_telemetry.csv"
+        project_dir = next(
+            (
+                p for p in Path(__file__).resolve().parents
+                if (p / "pitwall_decode.py").exists()
+            ),
+            None
         )
+
+        if project_dir is None:
+            st.error("Cannot locate PitWall project folder.")
+            return
+
+        csv_path = project_dir / "processed" / "pitwall_live_rf.csv"
 
         if not csv_path.exists():
             st.warning("Waiting for receiver telemetry...")
@@ -228,11 +240,333 @@ def display():
         "PRR and missing packets are estimated using the 200 ms "
         "simulation interval. Actual RF link measurements will "
         "require HackRF receiver data."
+        )    
+    elif page == "ML Prediction":
+        st.subheader("AI Driving Behavior Prediction")
+        st.caption(
+            "Real RF telemetry | Random Forest | "
+            "Next consecutive packet prediction"
         )
 
-    elif page == "ML Prediction":
-        st.markdown("#### Future Driving Behavior Prediction")
-        st.caption("Random Forest model — predicts behavior 0.5 seconds ahead")
+        project_dir = next(
+            (
+                p for p in Path(__file__).resolve().parents
+                if (p / "pitwall_decode.py").exists()
+            ),
+            None
+        )
+
+        if project_dir is None:
+            st.error("Cannot locate PitWall project folder.")
+            return
+
+        model_path = (
+            project_dir / "processed"
+            / "pitwall_real_behavior_model.pkl"
+        )
+
+        csv_path = (
+            project_dir / "processed"
+            / "pitwall_live_rf.csv"
+        )
+
+        if source != "Live Receiver":
+            st.warning("Select Live Receiver to use real RF telemetry.")
+            return
+
+        if not model_path.exists():
+            st.warning("Real-data ML model not found.")
+            return
+
+        if not csv_path.exists():
+            st.warning("Waiting for decoded RF telemetry.")
+            return
+
+        # Load only our own locally trained model.
+        # Never load untrusted pickle/joblib files.
+        bundle = joblib.load(model_path)
+        model = bundle["model"]
+        features = bundle["features"]
+
+        # df is already loaded from the validated RF CSV.
+        live = df[df["crc_ok"]].copy()
+
+        if len(live) < 2:
+            st.warning("Waiting for at least two valid RF packets.")
+            return
+
+        
+        # Find the newest usable pair of real RF packets.
+        # Do not invent or interpolate missing telemetry.
+        current = None
+        previous = None
+
+        for i in range(len(live) - 1, 0, -1):
+            candidate_now = live.iloc[i]
+            candidate_before = live.iloc[i - 1]
+
+            candidate_dt = (
+                float(candidate_now["timestamp_ms"])
+                - float(candidate_before["timestamp_ms"])
+            )
+
+            candidate_gap = (
+                int(candidate_now["seq"])
+                - int(candidate_before["seq"])
+            ) % 256
+
+            if (
+                candidate_gap == 1
+                and 0 < candidate_dt <= 2000
+            ):
+                current = candidate_now
+                previous = candidate_before
+                break
+
+        if current is None:
+            st.warning(
+                "No consecutive CRC-valid packet pair found yet. "
+                "Waiting for more real telemetry."
+            )
+            return
+
+        dt_ms = (
+            float(current["timestamp_ms"])
+            - float(previous["timestamp_ms"])
+        )
+
+        newest_seq = int(live.iloc[-1]["seq"])
+        selected_seq = int(current["seq"])
+
+        if current.name != live.index[-1]:
+            st.warning(
+                "Showing the most recent eligible ML prediction "
+                f"(sequence {selected_seq}). "
+                f"Latest received sequence: {newest_seq}. "
+                "Waiting for a newer consecutive packet pair."
+            )
+
+        avg_rpm = (
+            float(current["left_rpm"])
+            + float(current["right_rpm"])
+        ) / 2
+
+        previous_avg_rpm = (
+            float(previous["left_rpm"])
+            + float(previous["right_rpm"])
+        ) / 2
+
+        input_values = {
+            "left_rpm": float(current["left_rpm"]),
+            "right_rpm": float(current["right_rpm"]),
+            "throttle_pct": float(current["throttle_pct"]),
+            "avg_rpm": avg_rpm,
+            "rpm_difference": abs(
+                float(current["left_rpm"])
+                - float(current["right_rpm"])
+            ),
+            "previous_avg_rpm": previous_avg_rpm,
+            "previous_throttle": float(
+                previous["throttle_pct"]
+            ),
+            "previous_dt_ms": dt_ms,
+        }
+
+        input_frame = pd.DataFrame(
+            [input_values],
+            columns=features,
+        )
+
+        prediction = model.predict(input_frame)[0]
+        probabilities = model.predict_proba(input_frame)[0]
+
+        probability_map = {
+            label: float(prob)
+            for label, prob in zip(
+                model.classes_,
+                probabilities,
+            )
+        }
+
+        confidence = max(probability_map.values()) * 100
+
+        # File modification time indicates whether new decoded
+        # data has recently reached the receiver CSV.
+        age_seconds = time.time() - csv_path.stat().st_mtime
+        st.caption(
+            f"Telemetry CSV age: {max(0, age_seconds):.1f} seconds"
+        )
+
+        # Check how recently the decoded RF CSV was updated.
+        age_seconds = time.time() - csv_path.stat().st_mtime
+        is_recent = age_seconds <= 15
+        if is_recent:
+            st.success("🟢 LIVE ML — Recent RF telemetry received")
+        else:
+            st.warning(
+                "🟡 RECORDED ML — Waiting for new validated RF packets"
+            )
+
+        if is_recent:
+            st.success("Receiving recent decoded RF telemetry")
+        else:
+            st.warning(
+                "Showing prediction from recorded telemetry. "
+                "No recent CSV update detected."
+            )
+
+        a, b, c = st.columns(3)
+
+        a.metric("Predicted behavior", prediction)
+        b.metric("Model probability", f"{confidence:.1f}%")
+        c.metric("Current average RPM", f"{avg_rpm:.0f}")
+
+        st.caption(
+            f"Input packet: sequence {int(current['seq'])} | "
+            f"ESP32 timestamp: {int(current['timestamp_ms'])} ms"
+        )
+
+        st.markdown("#### Prediction probabilities")
+
+        probability_df = pd.DataFrame(
+            {
+                "Behavior": list(probability_map.keys()),
+                "Probability": [
+                    round(p * 100, 1)
+                    for p in probability_map.values()
+                ],
+            }
+        )
+
+        st.bar_chart(
+            probability_df.set_index("Behavior")
+        )
+
+
+        st.markdown("#### Live ML prediction history")
+
+        history_rows = []
+        recent = live.tail(100).reset_index(drop=True)
+
+        for i in range(1, len(recent)):
+            now = recent.iloc[i]
+            before = recent.iloc[i - 1]
+
+            delta_ms = (
+                float(now["timestamp_ms"])
+                - float(before["timestamp_ms"])
+            )
+
+            sequence_gap = (
+                int(now["seq"]) - int(before["seq"])
+            ) % 256
+
+            if (
+                sequence_gap != 1
+                or delta_ms <= 0
+                or delta_ms > 2000
+            ):
+                continue
+
+            average_rpm = (
+                float(now["left_rpm"])
+                + float(now["right_rpm"])
+            ) / 2
+
+            previous_average_rpm = (
+                float(before["left_rpm"])
+                + float(before["right_rpm"])
+            ) / 2
+
+            values = {
+                "left_rpm": float(now["left_rpm"]),
+                "right_rpm": float(now["right_rpm"]),
+                "throttle_pct": float(now["throttle_pct"]),
+                "avg_rpm": average_rpm,
+                "rpm_difference": abs(
+                    float(now["left_rpm"])
+                    - float(now["right_rpm"])
+                ),
+                "previous_avg_rpm": previous_average_rpm,
+                "previous_throttle": float(
+                    before["throttle_pct"]
+                ),
+                "previous_dt_ms": delta_ms,
+            }
+
+            sample = pd.DataFrame([values], columns=features)
+            probabilities = model.predict_proba(sample)[0]
+
+            history_rows.append({
+                "packet_index": i,
+                "sequence": int(now["seq"]),
+                **{
+                    label: float(prob) * 100
+                    for label, prob in zip(
+                        model.classes_, probabilities
+                    )
+                },
+            })
+
+        if history_rows:
+            history_df = pd.DataFrame(history_rows)
+
+            probability_columns = list(model.classes_)
+
+            st.line_chart(
+                history_df.set_index("packet_index")[
+                    probability_columns
+                ],
+                y_label="Predicted probability (%)",
+                x_label="Packet position in recent history",
+            )
+
+            st.caption(
+                "Predictions use real CRC-valid RF packets. "
+                "The horizontal axis is packet position, "
+                "not elapsed time."
+            )
+
+            st.dataframe(
+                history_df.tail(10),
+                hide_index=True,
+                use_container_width=True,
+            )
+        else:
+            st.info(
+                "Waiting for consecutive validated RF packets "
+                "to build prediction history."
+            )
+
+
+        st.markdown("#### Current measured telemetry")
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric(
+            "Left RPM",
+            f"{float(current['left_rpm']):.0f}"
+        )
+        m2.metric(
+            "Right RPM",
+            f"{float(current['right_rpm']):.0f}"
+        )
+        m3.metric(
+            "Throttle",
+            f"{float(current['throttle_pct']):.0f}%"
+        )
+
+        st.info(
+            "Experimental real-data model. Predicts the "
+            "next consecutive RF packet's RPM-change class, "
+            "not a fixed 0.5-second horizon. Model "
+            "probabilities are not calibrated confidence "
+            "scores. Held-out accuracy: 66.7% on 30 "
+            "examples; further independent driving tests "
+            "are needed."
+        )
+#         elif page == "ML Prediction":
+# st.markdown("#### Future Driving Behavior Prediction")
+#                 st.caption("Random Forest model — predicts behavior 0.5 seconds ahead")                
 
         try:
             predictions = predict_history(frame)

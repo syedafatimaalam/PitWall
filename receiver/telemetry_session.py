@@ -31,8 +31,12 @@ rng = np.random.default_rng(42)
 
 csv_path = (
     Path(__file__).resolve().parent.parent
+    / "processed"
     / "pitwall_telemetry.csv"
 )
+
+# Create the processed folder if it doesn't exist
+csv_path.parent.mkdir(parents=True, exist_ok=True)
 
 decoded_rows = []
 rejected_packets = 0

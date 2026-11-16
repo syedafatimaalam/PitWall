@@ -3,48 +3,42 @@
 from packet import make_packet
 
 def manchester_encode(data):
-
     encoded = []
 
     for byte in data:
         for i in range(7, -1, -1):
-
             bit = (byte >> i) & 1
+
             if bit == 0:
-                encoded.extend([0, 1])
-            else:
                 encoded.extend([1, 0])
+            else:
+                encoded.extend([0, 1])
+
     return encoded
 
 
 def manchester_decode(chips):
+    if len(chips) % 16 != 0:
+        raise ValueError("Incomplete Manchester byte stream")
 
     decoded_bits = []
 
-    # Every original bit is represented by two chips
     for i in range(0, len(chips), 2):
+        pair = list(chips[i:i + 2])
 
-        pair = chips[i:i+2]
-
-        if pair == [0, 1]:
+        if pair == [1, 0]:
             decoded_bits.append(0)
-
-        elif pair == [1, 0]:
+        elif pair == [0, 1]:
             decoded_bits.append(1)
-
         else:
             raise ValueError(f"Invalid Manchester pair: {pair}")
 
-    # Convert decoded bits back into bytes
     decoded_bytes = bytearray()
 
     for i in range(0, len(decoded_bits), 8):
-
         byte = 0
-
-        for bit in decoded_bits[i:i+8]:
+        for bit in decoded_bits[i:i + 8]:
             byte = (byte << 1) | bit
-
         decoded_bytes.append(byte)
 
     return bytes(decoded_bytes)

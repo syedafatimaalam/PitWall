@@ -40,7 +40,7 @@ def make_packet(sequence: int, timestamp: int, left_rpm: int,
         + bytes([throttle, flags])
     )
     crc = crc16_ccitt_false(payload)
-    packet = PREAMBLE + SYNC + payload + crc.to_bytes(2, "big")
+    packet = PREAMBLE + SYNC + payload + crc.to_bytes(2, "little")
     assert len(packet) == 19
     return packet
 
@@ -51,7 +51,7 @@ def check_packet(packet: bytes) -> bool:
         len(packet) == 19
         and packet[:4] == PREAMBLE
         and packet[4:6] == SYNC
-        and crc16_ccitt_false(packet[6:17]) == int.from_bytes(packet[17:19], "big")
+        and crc16_ccitt_false(packet[6:17]) == int.from_bytes(packet[17:19], "little")
     )
 
 

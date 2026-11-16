@@ -1,0 +1,1 @@
+received_utc,timestamp_ms,seq,left_rpm,right_rpm,throttle_pct,flags,lap_event,mpu_valid,accel_x_mg,accel_y_mg,accel_z_mg,gyro_x_dps10,gyro_y_dps10,gyro_z_dps10,lap_count,crc_ok,packet_hex

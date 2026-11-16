@@ -40,8 +40,8 @@ def decode_packet(packet):
 
     # Extract received CRC (bytes 17 and 18)
     received_crc = int.from_bytes(
-        packet[17:19],
-        byteorder="big"
+    packet[17:19],
+    byteorder="little"
     )
 
     # Independently calculate CRC
@@ -83,7 +83,7 @@ def decode_packet(packet):
     # Decode individual status flags
     brake = bool(flags & 0b00000001)
 
-    lap_marker = bool(flags & 0b00000010)
+    lap_marker = bool(flags & 0x04)
 
     encoder_valid = bool(flags & 0b00000100)
 
