@@ -1,4 +1,5 @@
 
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -16,38 +17,14 @@ st.set_page_config(
 # ----------------------------------------
 
 PROJECT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(PROJECT))
+from pitwall_decode import decode_burst
+
 CAPTURE_DIR = PROJECT / "dataset" / "raw" / "live_captures"
 
 SAMPLE_RATE = 2_000_000
 CENTER_FREQ = 433_920_000
-CHIP_SAMPLES = 1000
-
-HEADER = bytes.fromhex("55 55 55 55 D3 91")
-HEADER_BITS = np.unpackbits(
-    np.frombuffer(HEADER, dtype=np.uint8)
-)
-
-PACKET_SIZE = 19
 EXPECTED_BYTES = 12_000_000
-
-
-# ----------------------------------------
-# CRC-16/CCITT-FALSE
-# ----------------------------------------
-
-def crc16(data):
-    crc = 0xFFFF
-
-    for byte in data:
-        crc ^= byte << 8
-
-        for _ in range(8):
-            if crc & 0x8000:
-                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
-            else:
-                crc = (crc << 1) & 0xFFFF
-
-    return crc
 
 
 # ----------------------------------------
@@ -105,7 +82,7 @@ def detect_bursts(filename, file_size, modified_ns):
         (int(start * block_samples),
          int(end * block_samples))
         for start, end in zip(starts, ends)
-        if 100 <= end - start <= 220
+        if 100 <= end - start <= 360
     ]
 
     times = np.arange(blocks) / 1000
@@ -180,137 +157,12 @@ def analyze_burst(filename, file_size, modified_ns, start, end):
 
     adaptive_threshold = adaptive_ook_threshold(smooth)
 
-    methods = {
-        "Fixed": smooth > fixed_threshold,
-        "Adaptive": smooth > adaptive_threshold,
-    }
-
     decoded = None
-    diagnostics = {}
-
-    for method_name, digital_values in methods.items():
-        digital = digital_values.astype(np.uint8)
-
-        best_header_matches = 0
-        valid_manchester_candidates = 0
-        crc_failures = 0
-
-        for phase in range(0, CHIP_SAMPLES, 25):
-            count = (len(digital) - phase) // CHIP_SAMPLES
-
-            if count < PACKET_SIZE * 16:
-                continue
-
-            section = digital[
-                phase:phase + count * CHIP_SAMPLES
-            ]
-
-            chips = (
-                section.reshape(count, CHIP_SAMPLES)
-                .mean(axis=1) > 0.5
-            ).astype(np.uint8)
-
-            for shift in (0, 1):
-                paired = chips[shift:]
-                paired = paired[:len(paired) // 2 * 2]
-
-                first = paired[0::2]
-                second = paired[1::2]
-                valid = first != second
-
-                for invert in (False, True):
-                    bits = second ^ int(invert)
-                    limit = len(bits) - PACKET_SIZE * 8 + 1
-
-                    if limit <= 0:
-                        continue
-
-                    # Search only positions where the full
-                    # known ESP32 header matches.
-                    header_positions = np.flatnonzero(
-                        np.correlate(
-                            bits.astype(np.int16),
-                            HEADER_BITS.astype(np.int16),
-                            mode="valid",
-                        ) == int(HEADER_BITS.sum())
-                    )
-
-                    # Verify exact equality: correlation alone
-                    # is not sufficient to confirm a header.
-                    for pos in header_positions:
-                        if pos >= limit:
-                            continue
-
-                        if not np.array_equal(
-                            bits[pos:pos + 48],
-                            HEADER_BITS,
-                        ):
-                            continue
-
-                        best_header_matches += 1
-                        stop = pos + PACKET_SIZE * 8
-
-                        if not np.all(valid[pos:stop]):
-                            continue
-
-                        valid_manchester_candidates += 1
-
-                        packet_bits = bits[pos:stop]
-                        packet = np.packbits(packet_bits).tobytes()
-
-                        received_crc = int.from_bytes(
-                            packet[17:19], "little"
-                        )
-                        calculated_crc = crc16(packet[6:17])
-
-                        if received_crc != calculated_crc:
-                            crc_failures += 1
-                            continue
-
-                        chip_offset = shift + pos * 2
-
-                        decoded = {
-                            "method": method_name,
-                            "seq": packet[6],
-                            "timestamp_ms": int.from_bytes(
-                                packet[7:11], "little"
-                            ),
-                            "left_rpm": int.from_bytes(
-                                packet[11:13], "little"
-                            ),
-                            "right_rpm": int.from_bytes(
-                                packet[13:15], "little"
-                            ),
-                            "throttle": packet[15],
-                            "flags": packet[16],
-                            "lap_event": bool(packet[16] & 0x04),
-                            "packet_hex": packet.hex().upper(),
-                            "bits": packet_bits.copy(),
-                            "chips": chips[
-                                chip_offset:
-                                chip_offset + PACKET_SIZE * 16
-                            ].copy(),
-                            "chip_start": (
-                                phase + chip_offset * CHIP_SAMPLES
-                            ),
-                        }
-                        break
-
-                    if decoded is not None:
-                        break
-                if decoded is not None:
-                    break
-            if decoded is not None:
-                break
-
-        diagnostics[method_name] = {
-            "header_matches": best_header_matches,
-            "manchester_candidates": valid_manchester_candidates,
-            "crc_failures": crc_failures,
-        }
-
-        if decoded is not None:
-            break
+    recovered = next(decode_burst(envelope), None)
+    if recovered is not None:
+        size, packet, row = recovered
+        bits = np.unpackbits(np.frombuffer(packet, dtype=np.uint8))
+        decoded = {**row, "size": size, "bits": bits}
 
     step = max(1, len(smooth) // 12000)
 
@@ -325,9 +177,7 @@ def analyze_burst(filename, file_size, modified_ns, start, end):
         smooth[::step],
         fixed_threshold,
         decoded,
-        begin,
         adaptive_threshold[::step],
-        diagnostics,
     )
 
 
@@ -548,9 +398,7 @@ if bursts:
             envelope,
             threshold,
             decoded,
-            begin,
             adaptive_threshold,
-            diagnostics,
         ) = analyze_burst(
             str(selected),
             file_size,
@@ -601,29 +449,7 @@ if bursts:
     )
 
 
-    with st.expander("OOK and Manchester diagnostics"):
-        st.write("**Decoder checks**")
-
-        for method, info in diagnostics.items():
-            st.write(
-                f"**{method} threshold:** "
-                f"{info['header_matches']} header matches, "
-                f"{info['manchester_candidates']} "
-                f"Manchester-valid candidates, "
-                f"{info['crc_failures']} CRC failures"
-            )
-
-        if decoded is not None:
-            st.success(
-                f"CRC-valid packet recovered using "
-                f"{decoded['method']} thresholding."
-            )
-        else:
-            st.warning(
-                "Neither thresholding method recovered "
-                "a CRC-valid packet."
-            )
-
+    st.caption("The threshold lines show the OOK envelope. The decoder compares the two halves of each Manchester bit and verifies packet CRC.")
 
     st.subheader("2. Manchester Decoding")
 
@@ -637,7 +463,7 @@ if bursts:
     else:
 
         st.success(
-            "Manchester packet decoded — CRC PASSED"
+            f"Manchester packet decoded · {decoded['size']}-byte frame · CRC PASSED"
         )
 
         m1, m2, m3, m4 = st.columns(4)
@@ -645,39 +471,33 @@ if bursts:
         m1.metric("Sequence", decoded["seq"])
         m2.metric("Left RPM", decoded["left_rpm"])
         m3.metric("Right RPM", decoded["right_rpm"])
-        m4.metric("Throttle", f'{decoded["throttle"]}%')
+        m4.metric("Throttle", f'{decoded["throttle_pct"]}%')
 
         bits_to_show = st.slider(
             "Number of decoded bits to display",
             min_value=8,
-            max_value=152,
+            max_value=len(decoded["bits"]),
             value=48,
             step=8,
         )
 
-        chips = decoded["chips"][:bits_to_show * 2]
         bits = decoded["bits"][:bits_to_show]
-
-        chip_times = (
-            begin
-            + decoded["chip_start"]
-            + np.arange(len(chips) + 1) * CHIP_SAMPLES
-        ) / SAMPLE_RATE * 1000
+        chips = np.column_stack((bits ^ 1, bits)).ravel()
 
         chip_fig = go.Figure()
 
         chip_fig.add_trace(
             go.Scatter(
-                x=chip_times,
+                x=np.arange(len(chips) + 1),
                 y=np.r_[chips, chips[-1]],
                 mode="lines",
                 line_shape="hv",
-                name="Measured Manchester chips",
+                name="Manchester chips reconstructed from decoded bits",
             )
         )
 
         chip_fig.update_layout(
-            xaxis_title="Time (ms)",
+            xaxis_title="Chip index",
             yaxis_title="Chip level",
             yaxis=dict(
                 tickvals=[0, 1],
@@ -719,7 +539,7 @@ if bursts:
 else:
 
     st.warning(
-        "No v1-length RF bursts detected in this recording. "
+        "No RF bursts detected in this recording. "
         "The spectrum and waterfall are still available."
     )
 

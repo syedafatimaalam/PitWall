@@ -36,7 +36,7 @@ chips = np.array(
     dtype=np.uint8
 )
 
-chip_rate = 4000
+chip_rate = 2000
 sample_rate = 200000
 samples_per_chip = sample_rate // chip_rate
 

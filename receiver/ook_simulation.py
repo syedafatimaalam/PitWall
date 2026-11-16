@@ -40,7 +40,7 @@ print("Manchester chips:", len(chips))
 # 3. DEFINE COMMUNICATION PARAMETERS
 # ============================================
 
-chip_rate = 4000       # Manchester chips per second
+chip_rate = 2000       # Manchester chips per second
 carrier_freq = 10000   # 10 kHz illustrative carrier
 sample_rate = 200000   # 200 kHz simulation sampling rate
 

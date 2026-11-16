@@ -18,7 +18,7 @@ from packet_decoder import decode_packet
 
 NUM_PACKETS = 100
 
-CHIP_RATE = 4000
+CHIP_RATE = 2000
 SAMPLE_RATE = 200000
 SAMPLES_PER_CHIP = SAMPLE_RATE // CHIP_RATE
 

@@ -298,53 +298,70 @@ def display():
         
         # Find the newest usable pair of real RF packets.
         # Do not invent or interpolate missing telemetry.
-        current = None
-        previous = None
+                # Use only the latest two CRC-valid RF packets.
+        # Never display an older prediction as LIVE.
 
-        for i in range(len(live) - 1, 0, -1):
-            candidate_now = live.iloc[i]
-            candidate_before = live.iloc[i - 1]
+        live = live.reset_index(drop=True)
 
-            candidate_dt = (
-                float(candidate_now["timestamp_ms"])
-                - float(candidate_before["timestamp_ms"])
-            )
-
-            candidate_gap = (
-                int(candidate_now["seq"])
-                - int(candidate_before["seq"])
-            ) % 256
-
-            if (
-                candidate_gap == 1
-                and 0 < candidate_dt <= 2000
-            ):
-                current = candidate_now
-                previous = candidate_before
-                break
-
-        if current is None:
+        if len(live) < 2:
             st.warning(
-                "No consecutive CRC-valid packet pair found yet. "
-                "Waiting for more real telemetry."
+                "Waiting for two CRC-valid RF packets."
             )
             return
+
+        current = live.iloc[-1]
+        previous = live.iloc[-2]
 
         dt_ms = (
             float(current["timestamp_ms"])
             - float(previous["timestamp_ms"])
         )
 
-        newest_seq = int(live.iloc[-1]["seq"])
-        selected_seq = int(current["seq"])
+        seq_gap = (
+            int(current["seq"])
+            - int(previous["seq"])
+        ) % 256
 
-        if current.name != live.index[-1]:
+        latest_received = pd.to_datetime(
+            current["received_utc"],
+            utc=True,
+            errors="coerce"
+        )
+
+        if pd.isna(latest_received):
             st.warning(
-                "Showing the most recent eligible ML prediction "
-                f"(sequence {selected_seq}). "
-                f"Latest received sequence: {newest_seq}. "
-                "Waiting for a newer consecutive packet pair."
+                "Latest RF packet has no valid reception timestamp."
             )
+            return
+
+        age_seconds = (
+            pd.Timestamp.now(tz="UTC") - latest_received
+        ).total_seconds()
+
+        st.caption(
+            f"Latest RF packet: seq {int(current['seq'])} | "
+            f"Age: {age_seconds:.1f}s | "
+            f"Sequence gap: {seq_gap}"
+        )
+
+        if age_seconds > 15 or age_seconds < -5:
+            st.warning(
+                "RECORDED ML — No fresh CRC-valid RF packets. "
+                "Waiting for new decoder output."
+            )
+            return
+
+        if seq_gap != 1 or not (0 < dt_ms <= 2000):
+            st.warning(
+                "New RF packet received, but the latest two "
+                "packets are not consecutive. "
+                f"Sequence gap: {seq_gap}, "
+                f"Time difference: {dt_ms:.0f} ms."
+            )
+            return
+
+        is_recent = True
+        st.success("🟢 LIVE ML — Fresh, consecutive RF packets")
 
         avg_rpm = (
             float(current["left_rpm"])
@@ -392,29 +409,7 @@ def display():
 
         # File modification time indicates whether new decoded
         # data has recently reached the receiver CSV.
-        age_seconds = time.time() - csv_path.stat().st_mtime
-        st.caption(
-            f"Telemetry CSV age: {max(0, age_seconds):.1f} seconds"
-        )
-
-        # Check how recently the decoded RF CSV was updated.
-        age_seconds = time.time() - csv_path.stat().st_mtime
-        is_recent = age_seconds <= 15
-        if is_recent:
-            st.success("🟢 LIVE ML — Recent RF telemetry received")
-        else:
-            st.warning(
-                "🟡 RECORDED ML — Waiting for new validated RF packets"
-            )
-
-        if is_recent:
-            st.success("Receiving recent decoded RF telemetry")
-        else:
-            st.warning(
-                "Showing prediction from recorded telemetry. "
-                "No recent CSV update detected."
-            )
-
+        
         a, b, c = st.columns(3)
 
         a.metric("Predicted behavior", prediction)

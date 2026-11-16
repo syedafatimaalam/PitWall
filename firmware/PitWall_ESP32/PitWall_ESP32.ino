@@ -76,8 +76,6 @@ bool previousLapState = false;
 
 // ------------ MPU6050 VARIABLES ------------
 bool mpuConnected = false;
-bool mpuSampleValid = false;
-
 int16_t accelXmg = 0;
 int16_t accelYmg = 0;
 int16_t accelZmg = 0;
@@ -408,17 +406,18 @@ void updateSensors(uint32_t now) {
   updateWheelRPM(elapsed);
 
   if (mpuConnected) {
-    mpuSampleValid = readMPU();
+    // mpuSampleValid = readMPU();
 
-      if (!mpuSampleValid) {
-        mpuConnected = false;
-        Serial.println("MPU6050 read failed");
-      }
-    } else {
-      mpuSampleValid = false;
-    }
+    //   if (!mpuSampleValid) {
+    //     mpuConnected = false;
+    //     Serial.println("MPU6050 read failed");
+    //   }
+    // } else {
+    //   mpuSampleValid = false;
+    // }
 
-      lastSensorTime = now;
+    //   lastSensorTime = now;
+    readMPU();
     }
 
 // ==============================================
